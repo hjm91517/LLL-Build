@@ -34,11 +34,15 @@ jobs:
           if [ -s /tmp/payload.b64 ]; then
             python3 -c "import base64,sys;sys.stdout.buffer.write(base64.b64decode(open('/tmp/payload.b64','rb').read()))" > /tmp/src.tar.xz
             tar -xf /tmp/src.tar.xz -C .
-            echo "--- 解包后 ---"
-            ls -la
-            ls -la core ui | head -40
-          else
-            echo "没有 payload，直接构建当前仓库"
+          fi
+
+      - name: Apply overlay
+        run: |
+          set -euo pipefail
+          if [ -f overlay.b64 ]; then
+            echo "应用 overlay 热修"
+            python3 -c "import base64,sys;sys.stdout.buffer.write(base64.b64decode(open('overlay.b64','rb').read()))" > /tmp/overlay.tar.xz
+            tar -xf /tmp/overlay.tar.xz -C .
           fi
           test -f Makefile || { echo "!! 没有 Makefile"; exit 1; }
           grep -n "kPluginVersion" core/PluginInfo.h
@@ -78,7 +82,6 @@ jobs:
           set -euo pipefail
           make clean || true
           make all FINALPACKAGE=1 DEBUG=0 ARCHS="arm64 arm64e" TARGET="iphone:clang:latest:14.0"
-          echo "--- 产物 ---"
           find .theos -name '*.dylib' -not -path '*dSYM*' | sort
 
       - name: Collect & sign
@@ -107,7 +110,6 @@ jobs:
           fi
 
           if [ -n "$ENT" ]; then ldid -S"$ENT" dist/bbhj_online.dylib; else ldid -S dist/bbhj_online.dylib; fi
-          echo "== 产物信息 =="
           lipo -info dist/bbhj_online.dylib
           otool -L dist/bbhj_online.dylib | head -20
           shasum -a 256 dist/bbhj_online.dylib | tee dist/SHA256.txt
@@ -125,14 +127,13 @@ jobs:
           set -euo pipefail
           VER=$(sed -n 's/.*kPluginVersion @"\([^"]*\)".*/\1/p' core/PluginInfo.h | head -1)
           [ -z "$VER" ] && VER=0.0
-          mkdir -p pub
+          rm -rf pub && mkdir -p pub
           python3 - <<'PY'
           import base64, hashlib, os
           data = open('dist/bbhj_online.dylib','rb').read()
           b64 = base64.b64encode(data).decode()
           step = 180000
           parts = [b64[i:i+step] for i in range(0, len(b64), step)]
-          os.makedirs('pub', exist_ok=True)
           names = []
           for i, p in enumerate(parts):
               name = 'part-%02d.txt' % i
@@ -140,9 +141,9 @@ jobs:
               names.append(name)
           open('pub/index.txt','w').write('\n'.join(names) + '\n')
           open('pub/SHA256.txt','w').write(hashlib.sha256(data).hexdigest() + '\n')
+          open('pub/VERSION.txt','w').write(open('core/PluginInfo.h').read().split('@"')[1] + '\n')
           print('parts:', len(parts), 'bytes:', len(data))
           PY
-          cp -f dist/SHA256.txt pub/SHA256-ldid.txt || true
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
